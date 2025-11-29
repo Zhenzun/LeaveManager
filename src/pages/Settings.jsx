@@ -9,7 +9,10 @@ import toast from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
 
 export default function Settings() {
+  // Ambil user dan refreshProfile dari Context
+  // Jika refreshProfile undefined, kita beri fungsi kosong agar tidak error
   const { user: authUser, refreshProfile } = useAuth();
+  
   const [loading, setLoading] = useState(false);
   const [activeSection, setActiveSection] = useState('profile');
 
@@ -68,11 +71,14 @@ export default function Settings() {
   // --- 2. HANDLERS ---
   const handleUploadAvatar = async () => {
     if (!avatarFile) return profile.avatar_url;
+    
     const fileExt = avatarFile.name.split('.').pop();
     const fileName = `${authUser.id}-${Date.now()}.${fileExt}`;
     const filePath = `${fileName}`;
+
     const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, avatarFile);
     if (uploadError) throw uploadError;
+
     const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
     return data.publicUrl;
   };
@@ -99,7 +105,11 @@ export default function Settings() {
 
       if (error) throw error;
 
-      await refreshProfile(); 
+      // PERBAIKAN UTAMA: Cek dulu apakah refreshProfile ada
+      if (typeof refreshProfile === 'function') {
+          await refreshProfile(); 
+      }
+      
       toast.success("Profil berhasil disimpan!", { id: toastId });
       setAvatarFile(null); 
 
@@ -128,6 +138,7 @@ export default function Settings() {
     setLoading(true);
     const { error } = await supabase.auth.updateUser({ password: passwords.new });
     setLoading(false);
+    
     if (error) toast.error(error.message);
     else { 
       toast.success('Password berhasil diubah!'); 
@@ -138,13 +149,32 @@ export default function Settings() {
   const handleEnrollMfa = async () => {
     setLoading(true);
     try {
-      const factors = await supabase.auth.mfa.listFactors();
-      const trash = factors.data?.totp?.filter(f => f.status === 'unverified') || [];
-      for (const f of trash) await supabase.auth.mfa.unenroll({ factorId: f.id });
-      const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp', friendlyName: profile.full_name });
+      const { data: factors, error: listError } = await supabase.auth.mfa.listFactors();
+      if (listError) throw listError;
+      const unverifiedFactors = factors.totp.filter(f => f.status === 'unverified');
+      for (const factor of unverifiedFactors) {
+        await supabase.auth.mfa.unenroll({ factorId: factor.id });
+      }
+      const uniqueName = `${profile.full_name} (${new Date().getTime().toString().slice(-4)})`;
+      const { data, error } = await supabase.auth.mfa.enroll({ 
+        factorType: 'totp', 
+        friendlyName: uniqueName 
+      });
+
       if (error) throw error;
-      setMfaData(data); setShowMfaModal(true);
-    } catch (err) { toast.error(err.message); } finally { setLoading(false); }
+      
+      setMfaData(data); 
+      setShowMfaModal(true);
+    } catch (err) { 
+      console.error("MFA Error:", err);
+      if (err.message?.includes("already exists")) {
+         toast.error("Sedang membersihkan sesi lama, coba klik tombol sekali lagi.");
+      } else {
+         toast.error(err.message); 
+      }
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   const handleVerifyMfa = async () => {
